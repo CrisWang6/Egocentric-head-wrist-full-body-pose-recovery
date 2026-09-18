@@ -139,6 +139,9 @@ def build_blenderproc_motion_cache_from_amass(
     appearance_subject: str = "",
     appearance_render_status: str = "",
     scene_config: dict[str, object] | None = None,
+    head_cameras: list[FisheyeCamera] | tuple[FisheyeCamera, ...] | None = None,
+    head_camera_labels: dict[str, str] | None = None,
+    include_wrist_cameras: bool = True,
 ) -> BlenderProcCacheResult:
     source = np.load(motion_path, allow_pickle=True)
     if not {"poses", "trans"}.issubset(source.files):
@@ -218,6 +221,9 @@ def build_blenderproc_motion_cache_from_amass(
         right_wrist_rot=right_wrist_rot,
         width=sensor_width,
         height=sensor_height,
+        head_cameras=head_cameras,
+        head_camera_labels=head_camera_labels,
+        include_wrist_cameras=include_wrist_cameras,
     )
     tag_names, tag_corners = _tag_corner_arrays_from_sampled(
         tag_rig=tag_rig,
@@ -370,18 +376,22 @@ def _camera_pose_arrays_from_sampled(
     right_wrist_rot: np.ndarray,
     width: int,
     height: int,
+    head_cameras: list[FisheyeCamera] | tuple[FisheyeCamera, ...] | None = None,
+    head_camera_labels: dict[str, str] | None = None,
+    include_wrist_cameras: bool = True,
 ) -> tuple[list[str], np.ndarray, np.ndarray]:
-    head_labels = {
+    default_head_labels = {
         "CAM_A": "head_front_left",
         "CAM_B": "head_front_right",
         "CAM_C": "head_back_left",
         "CAM_D": "head_back_right",
     }
-    head_cameras = [_resize_head_camera(camera, width, height) for camera in make_default_camera_rig(config.camera_rig)]
-    wrist_cameras = [_resize_wrist_camera(camera, width, height) for camera in make_default_wrist_camera_rig(config.camera_rig)]
+    labels = default_head_labels if head_camera_labels is None else head_camera_labels
+    source_head_cameras = make_default_camera_rig(config.camera_rig) if head_cameras is None else head_cameras
+    resized_head_cameras = [_resize_head_camera(camera, width, height) for camera in source_head_cameras]
     entries: list[tuple[str, np.ndarray, np.ndarray]] = []
-    for camera in head_cameras:
-        label = head_labels.get(camera.name, camera.name.lower())
+    for camera in resized_head_cameras:
+        label = labels.get(camera.name, camera.name.lower())
         positions = []
         rotations = []
         for frame_idx in range(len(head_pos)):
@@ -390,20 +400,22 @@ def _camera_pose_arrays_from_sampled(
             rotations.append(rot)
         entries.append((label, np.stack(positions), np.stack(rotations)))
 
-    wrist_specs = (
-        ("left", left_wrist_pos, left_wrist_rot),
-        ("right", right_wrist_pos, right_wrist_rot),
-    )
-    for side, wrist_pos, wrist_rot in wrist_specs:
-        for camera in wrist_cameras:
-            label = f"{side}_{camera.name.lower()}"
-            positions = []
-            rotations = []
-            for frame_idx in range(len(wrist_pos)):
-                pos, rot = camera.world_pose(wrist_pos[frame_idx], wrist_rot[frame_idx])
-                positions.append(pos)
-                rotations.append(rot)
-            entries.append((label, np.stack(positions), np.stack(rotations)))
+    if include_wrist_cameras:
+        wrist_cameras = [_resize_wrist_camera(camera, width, height) for camera in make_default_wrist_camera_rig(config.camera_rig)]
+        wrist_specs = (
+            ("left", left_wrist_pos, left_wrist_rot),
+            ("right", right_wrist_pos, right_wrist_rot),
+        )
+        for side, wrist_pos, wrist_rot in wrist_specs:
+            for camera in wrist_cameras:
+                label = f"{side}_{camera.name.lower()}"
+                positions = []
+                rotations = []
+                for frame_idx in range(len(wrist_pos)):
+                    pos, rot = camera.world_pose(wrist_pos[frame_idx], wrist_rot[frame_idx])
+                    positions.append(pos)
+                    rotations.append(rot)
+                entries.append((label, np.stack(positions), np.stack(rotations)))
     names = [entry[0] for entry in entries]
     positions = np.stack([entry[1] for entry in entries], axis=0)
     rotations = np.stack([entry[2] for entry in entries], axis=0)
